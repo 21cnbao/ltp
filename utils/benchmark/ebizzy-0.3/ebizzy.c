@@ -354,6 +354,15 @@ static inline unsigned int rand_num(unsigned int max, unsigned int *state)
 	return ((*state / 65536) % max);
 }
 
+
+static inline unsigned int rand_chunk(void)
+{
+	/* simulate hot and cold chunk */
+	unsigned int rand[16] = {2, 2, 3, 4, 5, 2, 6, 7, 9, 2, 8, 3, 7, 2, 2, 4};
+	static int nr = 0;
+	return rand[nr++%16];
+}
+
 /*
  * This function is the meat of the program; the rest is just support.
  *
@@ -375,8 +384,9 @@ static unsigned int search_mem(void)
 	unsigned int i;
 	unsigned int state = 0;
 
-	for (i = 0; threads_go == 1; i++) {
-		chunk = rand_num(chunks, &state);
+	/* run 160 loops or till timeout */
+	for (i = 0; threads_go == 1 && i < 160; i++) {
+		chunk = rand_chunk();
 		src = mem[chunk];
 		/*
 		 * If we're doing random sizes, we need a non-zero
@@ -439,6 +449,14 @@ static void *thread_run(void *arg __attribute__((unused)))
 	return NULL;
 }
 
+static void *timer_run(void *arg __attribute__((unused)))
+{
+	sleep(seconds);
+	threads_go = 0;
+
+	return NULL;
+}
+
 static struct timeval difftimeval(struct timeval *end, struct timeval *start)
 {
 	struct timeval diff;
@@ -449,7 +467,7 @@ static struct timeval difftimeval(struct timeval *end, struct timeval *start)
 
 static void start_threads(void)
 {
-	pthread_t thread_array[threads];
+	pthread_t thread_array[threads + 1];
 	double elapsed;
 	unsigned int i;
 	struct rusage start_ru, end_ru;
@@ -474,10 +492,12 @@ static void start_threads(void)
 	getrusage(RUSAGE_SELF, &start_ru);
 	start_time = time(NULL);
 	threads_go = 1;
-	sleep(seconds);
-	threads_go = 0;
-	elapsed = difftime(time(NULL), start_time);
-	getrusage(RUSAGE_SELF, &end_ru);
+
+	err = pthread_create(&thread_array[i], NULL, timer_run, NULL);
+	if (err) {
+		fprintf(stderr, "Error creating thread %d\n", i);
+		exit(1);
+	}
 
 	/*
 	 * The rest is just clean up.
@@ -490,6 +510,9 @@ static void start_threads(void)
 			exit(1);
 		}
 	}
+
+	elapsed = difftime(time(NULL), start_time);
+	getrusage(RUSAGE_SELF, &end_ru);
 
 	if (verbose)
 		printf("Threads finished\n");
